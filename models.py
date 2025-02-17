@@ -22,47 +22,58 @@ class PointMassVehicle(nn.Module):
         #drag = (self.b1 * torch.norm(q) - self.b2 * torch.tanh(torch.norm(q)))
         return drag
 
-    def forward(self, p, q, F):
+    def forward(self, x, u):
         """
-        Compute the next state of the system.
+        Compute the next state and output of the system.
 
         Args:
-            p (torch.Tensor): Current position (2D vector).
-            q (torch.Tensor): Current velocity (2D vector).
-            F (torch.Tensor): Control input force (2D vector).
+            x (torch.Tensor): Current state (4D vector).
+            u (torch.Tensor): Control input (2D vector).
 
         Returns:
-            torch.Tensor, torch.Tensor: Next position and velocity.
+            torch.Tensor, torch.Tensor: Next state and output of the system.
         """
+
+        #Define position and velocity
+        p = x[0:2]
+        q = x[2:]
+
         # Compute drag force
         cq = self.drag_force(q)
 
         # Update equations based on the discrete-time model
         next_p = p + self.Ts * q
-        next_q = q + self.Ts * (1 / self.mass) * (-cq*q + F)
+        next_q = q + self.Ts * (1 / self.mass) * (-cq*q + u)
 
-        return next_p, next_q
+        #Compute next state and output
+        x = torch.cat((next_p, next_q), dim=0)
+        y = next_p
 
-    def base_forward(self, p, q, F, Kp, Kd, target_position):
+        return x, y
+'''
+    def base_forward(self, x, u, Kp, target_position):
         """
-        Compute the next state of the system.
-
+        Compute the next state and output of the system.
+        
         Args:
-            p (torch.Tensor): Current position (2D vector).
-            q (torch.Tensor): Current velocity (2D vector).
-            F (torch.Tensor): Control input force (2D vector).
+            x (torch.Tensor): Current state (4D vector).
+            u (torch.Tensor): Control input (2D vector).
 
         Returns:
-            torch.Tensor, torch.Tensor: Next position and velocity.
+            torch.Tensor, torch.Tensor: Next state and output of the system.
         """
+
+        # Define position (output
+        p = x[0:2]
+        
         #Compute control input
-        control_input = torch.matmul(Kp, target_position - p) #+ torch.matmul(Kd, -q)
-        F = control_input + F
+        control_input = torch.matmul(Kp, target_position - p) 
+        u = control_input + u
         # Update equations based on the discrete-time model
-        next_p, next_q = self.forward(p, q, F)
+        x, y = self.forward(x, u)
 
-        return next_p, next_q
-
+        return x, y
+'''
 
 # Define a simple Multi-Layer Perceptron (MLP) class
 class MLP(nn.Module):
