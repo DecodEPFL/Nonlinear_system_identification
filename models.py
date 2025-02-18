@@ -51,39 +51,6 @@ class PointMassVehicle(nn.Module):
         y = next_p
 
         return x, y
-'''
-    def base_forward(self, x, u, Kp, target_position):
-        """
-        Compute the next state and output of the system.
-        
-        Args:
-            x (torch.Tensor): Current state (4D vector).
-            u (torch.Tensor): Control input (2D vector).
-
-        Returns:
-            torch.Tensor, torch.Tensor: Next state and output of the system.
-        """
-
-        # Define position (output
-        p = x[0:2]
-        
-        #Compute control input
-        control_input = torch.matmul(Kp, target_position - p) 
-        u = control_input + u
-        # Update equations based on the discrete-time model
-        x, y = self.forward(x, u)
-
-        return x, y
-'''
-class ProportionalController(nn.Module):
-    def __init__(self, Kp, y_target):
-        super().__init__()
-        self.Kp = Kp
-        self.y_target = y_target
-
-    def forward(self, y):
-        u = torch.matmul(self.Kp, self.y_target - y)
-        return u
 
 class NonLinearModel(nn.Module):
     def __init__(self):
@@ -107,6 +74,16 @@ class NonLinearModel(nn.Module):
         y = x
 
         return x, y
+
+class ProportionalController(nn.Module):
+    def __init__(self, Kp, y_target):
+        super().__init__()
+        self.Kp = Kp
+        self.y_target = y_target
+
+    def forward(self, y):
+        u = torch.matmul(self.Kp, self.y_target - y)
+        return u
 
 class NonLinearController(nn.Module):
     def __init__(self):
