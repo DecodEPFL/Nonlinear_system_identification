@@ -6,9 +6,6 @@ import pickle
 from models import PointMassVehicle, PsiU
 from utils import set_params
 import matplotlib.pyplot as plt
-from SSMs import DWN, DWNConfig
-import math
-from argparse import Namespace
 
 # Define simulation parameters
 learning_rate, epochs, n_xi, l, mass, ts, drag_coefficient_1, drag_coefficient_2, x_0, y_target, input_dim, state_dim, output_dim, horizon, num_signals = set_params()
@@ -80,6 +77,7 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
+#------------------data collection-----------------------------
 #closed loop data with different initial conditions
 # Predefine tensors to store the results
 y_data = torch.zeros((num_signals, horizon, output_dim))  # Position data
@@ -221,29 +219,7 @@ plt.legend()
 plt.grid(True)
 plt.show()
 
-#----------define models--------------
-# ssms
-cfg = {
-    "n_u": 2,
-    "n_y": 2,
-    "d_model": 5,
-    "d_state": 5,
-    "n_layers": 3,
-    "ff": "LMLP",  # GLU | MLP | LMLP
-    "max_phase": math.pi,
-    "r_min": 0.7,
-    "r_max": 0.98,
-    "gamma": False,
-    "trainable": False,
-    "gain": 2.4
-}
-cfg = Namespace(**cfg)
-
-# Build model
-config = DWNConfig(d_model=cfg.d_model, d_state=cfg.d_state, n_layers=cfg.n_layers, ff=cfg.ff, rmin=cfg.r_min,
-                   rmax=cfg.r_max, max_phase=cfg.max_phase, gamma=cfg.gamma, trainable=cfg.trainable, gain=cfg.gain)
-Qg_SSM = DWN(cfg.n_u, cfg.n_y, config)
-
+#----------define model--------------
 #create the model Qg REN
 Qg_REN = PsiU(input_dim, output_dim, n_xi, l)
 
@@ -255,56 +231,10 @@ MSE = nn.MSELoss()
 input_data_training = u_data_2
 output_data_training = y_data_2
 y_hat_train = torch.zeros(output_data_training.shape)
-
-#-----------------------------closedloop sysid training of G directly through SSM------------------------
-
-# Define the optimizer and learning rate
-optimizer = torch.optim.Adam(Qg_SSM.parameters(), lr=learning_rate)
-optimizer.zero_grad()
-
-# Training loop settings
-LOSS = np.zeros(epochs)
-
-for epoch in range(epochs):
-    # Adjust learning rate at specific epochs
-    if epoch == epochs - epochs / 2:
-        learning_rate = 1.0e-3
-        optimizer = torch.optim.Adam(Qg_SSM.parameters(), lr=learning_rate)
-    if epoch == epochs - epochs / 6:
-        learning_rate = 1.0e-3
-        optimizer = torch.optim.Adam(Qg_SSM.parameters(), lr=learning_rate)
-
-    optimizer.zero_grad()  # Reset gradients
-    loss = 0  # Initialize loss
-
-    # Forward pass through the SSM
-    ySSM, _ = Qg_SSM(input_data_training, state=None, mode="scan")
-    ySSM = torch.squeeze(ySSM)  # Remove unnecessary dimensions
-
-    # Calculate the mean squared error loss
-    loss = MSE(ySSM, output_data_training)
-    loss.backward()  # Backpropagate to compute gradients
-
-    # Update model parameters
-    optimizer.step()
-
-    # Print loss for each epoch
-    print(f"Epoch: {epoch + 1} \t||\t Loss: {loss}")
-    LOSS[epoch] = loss
-
 time_plot = np.arange(0, input_data_training.shape[1] * ts, ts)
 
-for idx in range(2):
-    plt.figure(figsize=(12, 8))
-    plt.subplot(2, 1, 1)
-    plt.plot(time_plot, ySSM[idx, 0:len(time_plot), 0].detach().numpy(), label='SSM')
-    plt.plot(time_plot, output_data_training[idx, 0:len(time_plot), 0].detach().numpy(), label='y train')
-    plt.title("Output Train Single SSM")
-    plt.legend()
-    plt.show()
 
 #-----------------------------closedloop sysid training of G directly through RENs------------------------
-
 optimizer = torch.optim.Adam(Qg_REN.parameters(), lr=learning_rate)
 optimizer.zero_grad()
 
@@ -368,71 +298,6 @@ for i in range(2):
     plt.tight_layout()
 
     plt.show()
-
-#-----------------------------closedloop sysid of S through SSMs------------------------
-
-# Define the optimizer and learning rate
-optimizer = torch.optim.Adam(Qg_SSM.parameters(), lr=learning_rate)
-optimizer.zero_grad()
-
-# Training loop settings
-LOSS = np.zeros(epochs)
-
-validation_losses = []
-
-for epoch in range(epochs):
-    # Adjust learning rate at specific epochs
-    if epoch == epochs - epochs / 2:
-        learning_rate = 1.0e-3
-        optimizer = torch.optim.Adam(Qg_SSM.parameters(), lr=learning_rate)
-    if epoch == epochs - epochs / 6:
-        learning_rate = 1.0e-3
-        optimizer = torch.optim.Adam(Qg_SSM.parameters(), lr=learning_rate)
-
-    optimizer.zero_grad()
-    loss = 0.0
-
-    # Training loop
-    for n in range(input_data_training.shape[0]):
-        for t in range(input_data_training.shape[1]):
-            if t == 0:
-                u_K = torch.zeros(2)
-                state = None
-            u_ext = input_data_training[n, t, :]
-            u = u_ext - u_K
-            u = u.view(1, 1, 2)  # Reshape input
-            y_hat, state = Qg_SSM(u, state=state, mode="loop")
-            y_hat = y_hat.squeeze(0).squeeze(0)
-            u_K = torch.matmul(Kp, y_target - y_hat)
-            loss = loss + MSE(output_data_training[n, t, :], y_hat[:])
-            y_hat_train[n, t, :] = y_hat.detach()
-
-    # Normalize training loss
-    loss /= (input_data_training.shape[0] * input_data_training.shape[1])
-    loss.backward()
-    optimizer.step()
-
-    # Print training loss for this epoch
-    print(f"Epoch: {epoch + 1} \t||\t Training Loss: {loss}")
-    LOSS[epoch] = loss.item()
-
-
-plt.figure(figsize=(12, 8))
-
-# Plot for each selected signal
-for i in range(2):
-    plt.subplot(2, 1, i + 1)
-    plt.plot(time_plot, output_data_training[i, 0:len(time_plot), 0].detach().numpy(), label="Real Output X", color="blue")
-    plt.plot(time_plot, y_hat_train[i, 0:len(time_plot), 0].detach().numpy(), label="Modelled Output X", linestyle="--", color="orange")
-    plt.plot(time_plot, output_data_training[i, 0:len(time_plot), 1].detach().numpy(), label="Real Output Y", color="green")
-    plt.plot(time_plot, y_hat_train[i, 0:len(time_plot), 1].detach().numpy(), label="Modelled Output Y", linestyle="--", color="red")
-    plt.title(f"Real vs Modelled Outputs with SSMs for Signal {i} in training set")
-    plt.xlabel("Time (s)")
-    plt.ylabel("Output")
-    plt.legend()
-    plt.tight_layout()
-
-plt.show()
 
 #-----------------------------closedloop sysid of S through RENs------------------------
 
