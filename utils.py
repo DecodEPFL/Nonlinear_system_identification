@@ -8,8 +8,8 @@ def set_params():
     ts = 0.05  # Sampling time (s)
     drag_coefficient_1 = 1.  # Drag coefficient 1 (N·s/m)
     drag_coefficient_2 = 0.1  # Drag coefficient 2 (N·s/m)
-    x_0 = torch.tensor([2.0, 2.0, 0., 0.]) # Initial state: position (m) and velocity (m/s)
     y_target = torch.tensor([0.0, 0.0])  # Output target: position (m)
+    x_0 = torch.tensor([2.0, 2.0, 0., 0.]) # Initial state: position (m) and velocity (m/s)
     input_dim = 2
     state_dim = 4
     output_dim = 2
@@ -17,7 +17,6 @@ def set_params():
     #Dataset
     horizon = 100
     num_signals = 20
-
 
     # # # # # # # # Hyperparameters # # # # # # # #
     learning_rate = 1e-3

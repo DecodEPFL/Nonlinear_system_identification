@@ -11,6 +11,7 @@ class PointMassVehicle(nn.Module):
         self.b1 = drag_coefficient_1  # Drag coefficient 1
         self.b2 = drag_coefficient_2  # Drag coefficient 2
         #self.integral_error = torch.zeros(2)  # Initialize integral error for PI controller
+        self.vehicle = True
 
     def drag_force(self, q):
         """Compute the drag force given the velocity q."""
@@ -74,6 +75,46 @@ class PointMassVehicle(nn.Module):
 
         return x, y
 '''
+class ProportionalController(nn.Module):
+    def __init__(self, Kp, y_target):
+        super().__init__()
+        self.Kp = Kp
+        self.y_target = y_target
+
+    def forward(self, y):
+        u = torch.matmul(self.Kp, self.y_target - y)
+        return u
+
+class NonLinearModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.vehicle = False
+
+    def forward(self, x, u):
+        """
+        Compute the next state and output of the system.
+
+        Args:
+            x (torch.Tensor): Current state
+            u (torch.Tensor): Control input
+
+        Returns:
+            torch.Tensor, torch.Tensor: Next state and output of the system.
+        """
+
+        #Compute next state and output
+        x = x**2 + 1 + u
+        y = x
+
+        return x, y
+
+class NonLinearController(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, y):
+        u = -y**2 - 1 + 0.5*y
+        return u
 
 # Define a simple Multi-Layer Perceptron (MLP) class
 class MLP(nn.Module):
