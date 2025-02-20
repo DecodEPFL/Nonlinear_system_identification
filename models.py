@@ -52,6 +52,16 @@ class PointMassVehicle(nn.Module):
 
         return x, y
 
+class ProportionalController(nn.Module):
+    def __init__(self, Kp, y_target):
+        super().__init__()
+        self.Kp = Kp
+        self.y_target = y_target
+
+    def forward(self, y):
+        u = torch.matmul(self.Kp, self.y_target - y)
+        return u
+
 class NonLinearModel(nn.Module):
     def __init__(self):
         super().__init__()
@@ -74,16 +84,6 @@ class NonLinearModel(nn.Module):
         y = x
 
         return x, y
-
-class ProportionalController(nn.Module):
-    def __init__(self, Kp, y_target):
-        super().__init__()
-        self.Kp = Kp
-        self.y_target = y_target
-
-    def forward(self, y):
-        u = torch.matmul(self.Kp, self.y_target - y)
-        return u
 
 class NonLinearController(nn.Module):
     def __init__(self):

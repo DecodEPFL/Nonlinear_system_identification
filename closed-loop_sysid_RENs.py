@@ -24,6 +24,54 @@ else:
     state_dim = 1
     output_dim = 1
 
+
+
+
+
+# Run open-loop simulation
+# Simulation parameters
+
+# Generate sinusoidal input
+t = torch.arange(horizon, dtype=torch.float32)
+u = torch.sin(2 * torch.pi * t / horizon)
+
+x = x_0
+x_traj = torch.zeros(horizon + 1)
+y_traj = torch.zeros(horizon)
+x_traj[0] = x_0
+
+# Run open-loop simulation
+for i in range(horizon):
+    x, y = sys.forward(x, u[i])
+    x_traj[i + 1] = x
+    y_traj[i] = y
+
+# Plot results
+plt.figure(figsize=(10, 4))
+plt.subplot(2, 1, 1)
+plt.plot(t.numpy(), u.numpy(), label='Input (u)')
+plt.xlabel('Time step')
+plt.ylabel('Input')
+plt.legend()
+plt.grid()
+
+plt.subplot(2, 1, 2)
+plt.plot(t.numpy(), y_traj.numpy(), label='Output (y)', color='r')
+plt.xlabel('Time step')
+plt.ylabel('Output')
+plt.legend()
+plt.grid()
+
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
+
 y_data, u_data = generate_closed_loop_data_different_x0(sys, controller, num_signals, horizon, input_dim, output_dim, state_dim)
 y_data_2, u_data_2 = generate_closed_loop_data_different_u(sys, controller, num_signals, horizon, input_dim, output_dim, x_0)
 y_data_3, u_data_3 = generate_closed_loop_data_different_x0_and_u(sys, controller, num_signals, horizon, input_dim, output_dim, state_dim)
@@ -40,7 +88,7 @@ MSE = nn.MSELoss()
 input_data_training = u_data_2
 output_data_training = y_data_2
 time_plot = np.arange(0, input_data_training.shape[1] * ts, ts)
-
+time_plot_u = np.arange(0, input_data_training.shape[1] * ts, ts)[1:]
 
 #-----------------------------closedloop sysid training of G directly through RENs------------------------
 y_hat_train_G = torch.zeros(output_data_training.shape)
@@ -92,7 +140,7 @@ for epoch in range(epochs):
 y_hat_train_S = torch.zeros(output_data_training.shape)
 optimizer = torch.optim.Adam(Qg_REN.parameters(), lr=learning_rate)
 optimizer.zero_grad()
-
+u_S = torch.zeros(input_data_training.shape)
 # Training loop settings
 LOSS = np.zeros(epochs)
 
@@ -108,7 +156,6 @@ for epoch in range(epochs):
         for t in range(input_data_training.shape[1]):  # Iterate over each time step
             u_ext = input_data_training[n, t, :]  # Extract external input
             u = u_ext - u_K  # Apply control input adjustment
-
             # Get model output
             y_hat, xi_ = Qg_REN.forward(t, u, xi_)
 
@@ -121,6 +168,7 @@ for epoch in range(epochs):
             # Store the predicted output
             if epoch == epochs - 1:
                 y_hat_train_S[n, t, :] = y_hat.detach()
+                u_S[n, t, :] = u.detach()
 
     # Normalize training loss by batch size and time steps
     loss /= (input_data_training.shape[0] * input_data_training.shape[1])
@@ -320,7 +368,7 @@ else:
 
     # --------------Plot identification results for G-----------------
 
-    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(12, 8), sharex=True)
+    fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(12, 8), sharex=True)
 
     # Plot for each selected signal in a separate subplot
     for i in range(2):
@@ -336,10 +384,21 @@ else:
 
     axes[-1].set_xlabel("Time (s)")  # Only set x-label on the last subplot for clarity
     plt.tight_layout()
+
+    # Plot control input u_S in the third subplot
+    axes[2].plot(time_plot_u, input_data_training[0, 1:len(time_plot), 0].detach().numpy(),
+                 label="Control Input u_G", color="green")
+
+    axes[2].set_title("Control Input u_G")
+    axes[2].set_ylabel("Input Value")
+    axes[2].set_xlabel("Time (s)")
+    axes[2].legend()
+
+    plt.tight_layout()
     plt.show()
 
     # --------------Plot identification results for S-----------------
-    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(12, 8), sharex=True)
+    fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(12, 8), sharex=True)
 
     # Plot for each selected signal in a separate subplot
     for i in range(2):
@@ -355,4 +414,53 @@ else:
 
     axes[-1].set_xlabel("Time (s)")  # Only set x-label on the last subplot for clarity
     plt.tight_layout()
+
+    # Plot control input u_S in the third subplot
+    axes[2].plot(time_plot_u, u_S[0, 1:len(time_plot), 0].detach().numpy(),
+                 label="Control Input u_S", color="green")
+
+    axes[2].set_title("Control Input u_S")
+    axes[2].set_ylabel("Input Value")
+    axes[2].set_xlabel("Time (s)")
+    axes[2].legend()
+
+    plt.tight_layout()
     plt.show()
+
+
+# Run open-loop simulation of the identified G
+# Simulation parameters
+
+# Generate sinusoidal input
+t = torch.arange(horizon, dtype=torch.float32)
+
+xi_ = torch.zeros(Qg_REN.n_xi)
+y_traj = torch.zeros(horizon)
+
+# Run open-loop simulation
+
+for i in range(horizon-1):  # Iterate over each time step
+    u_ext = input_data_training[0, i, :]  # Extract external input
+    u = u_ext
+    y_hat, xi_ = Qg_REN.forward(t, u, xi_)
+    y_traj[i+1] = y_hat
+
+
+# Plot results
+plt.figure(figsize=(10, 4))
+plt.subplot(2, 1, 1)
+plt.plot(t.numpy(), input_data_training[0, :, 0].detach().numpy(), label='Input (u)')
+plt.xlabel('Time step')
+plt.ylabel('Input')
+plt.legend()
+plt.grid()
+
+plt.subplot(2, 1, 2)
+plt.plot(t.numpy(), y_traj.detach().numpy(), label='Output (y)', color='r')
+plt.xlabel('Time step')
+plt.ylabel('Output')
+plt.legend()
+plt.grid()
+
+plt.tight_layout()
+plt.show()
