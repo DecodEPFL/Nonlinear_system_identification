@@ -84,10 +84,12 @@ class ContractiveREN(nn.Module):
             else:
                 y_init = y_init.reshape(1, -1)
                 self.x = torch.linalg.lstsq(self.C2, y_init.to(self.C2.device).squeeze(1).T)[0].T
+                print(y_init.squeeze(1))
         else:
             assert isinstance(internal_state_init, torch.Tensor)
             self.x = internal_state_init.reshape(1, 1, self.dim_internal)
-        self.register_buffer('init_x', self.x.detach().clone())
+        self.register_buffer('x_init', self.x.detach().clone())
+        self.register_buffer('y_init', F.linear(self.x_init, self.C2))
 
     def _update_model_param(self):
         """
@@ -145,7 +147,26 @@ class ContractiveREN(nn.Module):
         return y_out
 
     def reset(self):
-        self.x = self.init_x  # reset the REN state to the initial value
+        self.x = self.x_init  # reset the REN state to the initial value
+
+
+    def run(self, u_in):
+        """
+        Runs the forward pass of REN for a whole input sequence of length horizon.
+
+        Args:
+            u_in (torch.Tensor): Input with the size of (batch_size, horizon, self.dim_in).
+
+        Return:
+            y_out (torch.Tensor): Output with (batch_size, horizon, self.dim_out).
+        """
+
+        self.reset()
+        y_log = self.y_init.detach().clone().repeat(u_in.shape[0], 1, 1)
+        for t in range(u_in.shape[1] - 1):
+            y_log = torch.cat((y_log, self.forward(u_in[:, t:t + 1, :])), 1)
+        # note that the last input is not used
+        return y_log
 
     # init trainable params
     def _init_trainable_params(self, initialization_std):
@@ -167,3 +188,43 @@ class ContractiveREN(nn.Module):
             (name, getattr(self, name)) for name in self.training_param_names
         )
         return param_dict
+
+    def __call__(self, u_in):
+        return self.run(u_in)
+
+#TODO
+class ClosedLoopREN(nn.Module):
+    """Simulates the closed-loop system (REN + Controller)."""
+
+    def __init__(self, REN, controller):
+        super().__init__()
+        self.REN = REN
+        self.controller = controller
+
+    def run(self, u_ext):
+
+        output_dim = self.REN.dim_out
+        input_dim = self.REN.dim_in
+
+        batch_size = u_ext.shape[0]
+        horizon = u_ext.shape[1]
+
+        # Storage for trajectories
+        y_traj = torch.zeros((batch_size, horizon, output_dim))
+        u_traj = torch.zeros((batch_size, horizon, input_dim))
+        self.REN.reset()
+        y = self.REN.y_init
+        for t in range(horizon):
+
+            control_u = self.controller.forward(y)  # Compute control input
+            u = control_u + u_ext[:, t:t + 1, :]
+
+            y = self.REN.forward(u)  # Apply input to REN
+            y_traj[:, t:t + 1, :] = y  # Store output
+            u_traj[:, t:t + 1, :] = u  # Store input
+
+        return y_traj
+
+    def __call__(self, u_ext):
+
+        return self.run(u_ext)
