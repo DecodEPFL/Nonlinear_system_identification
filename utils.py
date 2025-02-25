@@ -20,7 +20,7 @@ def set_params():
 
     # # # # # # # # Hyperparameters # # # # # # # #
     learning_rate = 1e-3
-    epochs = 1
+    epochs = 500
 
     #Model for system identification
     n_xi = 8  # \xi dimension -- number of states of REN

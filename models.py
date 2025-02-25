@@ -127,7 +127,12 @@ class ClosedLoopSystem(nn.Module):
         super().__init__()
         self.sys = sys
         self.controller = controller
+        if hasattr(self.sys, "noisy_forward"):
+            self.sys_tipe = "real_sys"
+        else:
+            self.sys_tipe = "REN_model"
 
+#TODO: check with ylog version in REN.run
     def run(self, x0, u_ext):
         """
         Simulates the closed-loop system for a given initial condition.
@@ -140,41 +145,69 @@ class ClosedLoopSystem(nn.Module):
             torch.Tensor, torch.Tensor: Trajectories of outputs and inputs
         """
 
-        output_dim = self.sys.output_dim
-        input_dim = self.sys.input_dim
-        state_dim = self.sys.state_dim
-
         batch_size = u_ext.shape[0]
         horizon = u_ext.shape[1]
 
-        if x0.shape == (batch_size, 1, state_dim):
-            x0_batched = x0
-        elif x0.shape == (1, 1, state_dim):
-            x0_batched = x0.expand(batch_size, 1, state_dim)
-        elif x0.shape == torch.Size([1]):
-            x0_batched = x0.view(1,1,-1).expand(batch_size, 1, state_dim)
+        if self.sys_tipe == "real_sys":
+            output_dim = self.sys.output_dim
+            input_dim = self.sys.input_dim
+            state_dim = self.sys.state_dim
+
+            if x0.shape == (batch_size, 1, state_dim):
+                x0_batched = x0
+            elif x0.shape == (1, 1, state_dim):
+                x0_batched = x0.expand(batch_size, 1, state_dim)
+            elif x0.shape == torch.Size([1]):
+                x0_batched = x0.view(1,1,-1).expand(batch_size, 1, state_dim)
+            else:
+                print('Wrong shape of initial conditions')
+
+            # Compute initial output with noisy measurements
+            y0_batched = x0_batched
+            y0_noisy_batched = y0_batched + torch.randn_like(y0_batched) * self.sys.output_noise_std
+
+            # Initialize state
+            x = x0_batched.clone()
+            y = y0_noisy_batched.clone()
+
+            # Storage for trajectories
+            y_traj = []
+            u_traj = []
+
+            for t in range(horizon):
+                control_u = self.controller.forward(y)  # Compute control input
+                u = control_u + u_ext[:, t:t + 1, :]
+                y_traj.append(y)  # Store output
+                u_traj.append(u)  # Store input
+                x, y = self.sys.noisy_forward(x, u)  # Apply input to plant
+
+            # Convert lists to tensors
+            y_traj = torch.cat(y_traj, dim=1)  # Shape: (batch_size, horizon, output_dim)
+            u_traj = torch.cat(u_traj, dim=1)  # Shape: (batch_size, horizon, input_dim)
+
         else:
-            print('Wrong shape of initial conditions')
+            output_dim = self.sys.dim_out
+            input_dim = self.sys.dim_in
 
+            self.sys.reset()
+            y = self.sys.y_init.detach().clone().repeat(batch_size, 1, 1)
+            # Storage for trajectories
+            y_traj = []
+            u_traj = []
 
-        # Storage for trajectories
-        y_traj = torch.zeros((batch_size, horizon, output_dim))
-        u_traj = torch.zeros((batch_size, horizon, input_dim))
+            for t in range(horizon):
+                control_u = self.controller.forward(y)  # Compute control input
 
-        # Compute initial output with noisy measurements
-        y0_batched = x0_batched
-        y0_noisy_batched = y0_batched + torch.randn_like(y0_batched) * self.sys.output_noise_std
-        print(y0_noisy_batched)
-        # Initialize state
-        x = x0_batched.clone()
-        y = y0_noisy_batched.clone()
+                #minus sign for the control input
+                u = control_u + u_ext[:, t:t + 1, :]
+                y_traj.append(y)  # Store output
+                u_traj.append(u)  # Store input
 
-        for t in range(horizon):
-            control_u = self.controller.forward(y)  # Compute control input
-            u = control_u + u_ext[:, t:t+1, :]
-            y_traj[:, t:t + 1, :] = y  # Store output
-            u_traj[:, t:t + 1, :] = u  # Store input
-            x, y = self.sys.noisy_forward(x, u)  # Apply input to plant
+                y = self.sys.forward(u)  # Apply input to REN
+
+            # Convert lists to tensors
+            y_traj = torch.cat(y_traj, dim=1)  # Shape: (batch_size, horizon, output_dim)
+            u_traj = torch.cat(u_traj, dim=1)  # Shape: (batch_size, horizon, input_dim)
 
         return u_traj, y_traj
 
@@ -189,5 +222,4 @@ class ClosedLoopSystem(nn.Module):
             torch.Tensor, torch.Tensor: Trajectories of outputs and inputs
         """
         return self.run(x0, u_ext)
-
 
