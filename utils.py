@@ -4,11 +4,11 @@ def set_params():
     # # # # # # # # Parameters # # # # # # # #
 
     #Model
-    x0 = torch.tensor([2.0])  # Initial state
+    x0 = torch.tensor([20.0])  # Initial state
     input_dim = 1
     state_dim = 1
     output_dim = 1
-    input_noise_std = 0.1
+    input_noise_std = 0.8
     output_noise_std = 0.1
 
 

@@ -14,12 +14,12 @@ plt.close("all")
 x0, input_dim, state_dim, output_dim, input_noise_std, output_noise_std, horizon, num_signals, batch_size, ts, learning_rate, epochs, n_xi, l = set_params()
 
 #-------------------------1. Create the plant and controller------------------------------------
-sys = NonLinearModel(state_dim=state_dim, input_dim=input_dim, output_dim=output_dim, output_noise_std=output_noise_std)
+plant = NonLinearModel(state_dim=state_dim, input_dim=input_dim, output_dim=output_dim)
 controller = NonLinearController(input_K_dim=output_dim, output_K_dim=input_dim)
-closed_loop = ClosedLoopSystem(sys, controller)
+closed_loop = ClosedLoopSystem(plant, controller)
 
 #-------------------------2. Generate closed loop data---------------------------------------------
-dataset = SystemIdentificationDataset(num_signals = num_signals, horizon = horizon, input_dim = input_dim, state_dim = state_dim, output_dim = output_dim, closed_loop = closed_loop, input_noise_std = input_noise_std, fixed_x0 = x0)
+dataset = SystemIdentificationDataset(num_signals = num_signals, horizon = horizon, input_dim = input_dim, state_dim = state_dim, output_dim = output_dim, closed_loop = closed_loop, input_noise_std = input_noise_std, output_noise_std = output_noise_std, fixed_x0 = x0)
 
 # Compute split sizes
 train_size = int(num_signals/2)
@@ -50,22 +50,19 @@ output_np = output_data.detach().numpy()
 fig, axes = plt.subplots(3, 1, figsize=(10, 8))
 
 # Plot External Inputs
-for i in range(input_dim):
-    axes[0].plot(external_input_np[:, :, i].T, alpha=0.6)
+axes[0].plot(external_input_np[:, :, 0].T, alpha=0.6)
 axes[0].set_title("External Input Trajectories")
 axes[0].set_xlabel("Time Step")
 axes[0].set_ylabel("External Input")
 
 # Plot Plant Inputs (Controller Outputs)
-for i in range(input_dim):
-    axes[1].plot(plant_input_np[:, :, i].T, alpha=0.6)
+axes[1].plot(plant_input_np[:, :, 0].T, alpha=0.6)
 axes[1].set_title("Plant Input Trajectories (Control Input + external signal)")
 axes[1].set_xlabel("Time Step")
 axes[1].set_ylabel("Control Input")
 
 # Plot System Outputs
-for i in range(output_dim):
-    axes[2].plot(output_np[:, :, i].T, alpha=0.6)
+axes[2].plot(output_np[:, :, 0].T, alpha=0.6)
 axes[2].set_title("System Output Trajectories")
 axes[2].set_xlabel("Time Step")
 axes[2].set_ylabel("System Output")
@@ -96,7 +93,7 @@ for epoch in range(epochs):
     REN_G.train()
     loss_epoch = 0.0  # Accumulate training loss
 
-    for u_batch, y_batch in train_loader:
+    for _, u_batch, y_batch in train_loader:
         u_batch, y_batch = u_batch.to(device), y_batch.to(device)
 
         optimizer.zero_grad()
@@ -118,7 +115,7 @@ for epoch in range(epochs):
     loss_val_epoch = 0.0
 
     with torch.no_grad():
-        for u_batch, y_batch in val_loader:
+        for _, u_batch, y_batch in val_loader:
             u_batch, y_batch = u_batch.to(device), y_batch.to(device)
             REN_G.reset()
 
@@ -153,8 +150,9 @@ plt.show()
 # Model's Predictions vs Actual Output for the training set
 fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(8, 12), sharex=True, sharey=True)
 
+train_iterator = iter(train_loader)
 for i in range(3):  # Choose 3 batches from training data
-    sample_u_batch, sample_y_batch = next(iter(train_loader))  # Get a sample batch
+    _, sample_u_batch, sample_y_batch = next(train_iterator)  # Get a sample batch
     sample_u_batch, sample_y_batch = sample_u_batch.to(device), sample_y_batch.to(device)
 
     # Plot comparison between real and predicted for training set
@@ -185,8 +183,9 @@ plt.show()
 # Model's Predictions vs Actual Output for the test set
 fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(8, 12), sharex=True, sharey=True)
 
+test_iterator = iter(test_loader)
 for i in range(3):  # Choose 3 batches from test data
-    sample_u_batch, sample_y_batch = next(iter(test_loader))  # Get a sample batch
+    _, sample_u_batch, sample_y_batch = next(test_iterator)  # Get a sample batch
     sample_u_batch, sample_y_batch = sample_u_batch.to(device), sample_y_batch.to(device)
 
     # Plot comparison between real and predicted for test set
@@ -214,9 +213,71 @@ plt.suptitle("Real vs Predicted Output for Test Set for G")
 plt.tight_layout()
 plt.show()
 
+# Residual Analysis: Plot residuals and their distribution
+fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(8, 12), sharex=True, sharey=True)
+
+test_iterator = iter(test_loader)
+for i in range(3):  # Choose 3 batches from test data
+    _, sample_u_batch, sample_y_batch = next(test_iterator)  # Get a sample batch
+    sample_u_batch, sample_y_batch = sample_u_batch.to(device), sample_y_batch.to(device)
+
+    # Plot comparison between real and predicted for test set
+    REN_G.eval()
+
+    y_hat = REN_G(sample_u_batch)
+
+    # Convert to numpy for plotting
+    y_batch_np = sample_y_batch.detach().cpu().numpy()
+    y_hat_np = y_hat.detach().cpu().numpy()
+    residual = y_batch_np - y_hat_np
+
+    # Time array for plotting
+    time_plot = np.arange(0, sample_u_batch.shape[1] * ts, ts)
+
+    axes[i].plot(time_plot, residual[0, :, 0], label="Residual", color="green")
+    axes[i].set_title(f"Test Set - Sample {i+1}")
+    axes[i].set_xlabel("Time (s)")
+    axes[i].set_ylabel("Residual")
+    axes[i].grid(True)
+
+plt.suptitle("Residuals")
+plt.tight_layout()
+plt.show()
+
+# (B) Plot histogram of residuals
+fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(8, 12), sharex=True, sharey=True)
+
+test_iterator = iter(test_loader)
+for i in range(3):  # Choose 3 batches from test data
+    _, sample_u_batch, sample_y_batch = next(test_iterator)  # Get a sample batch
+    sample_u_batch, sample_y_batch = sample_u_batch.to(device), sample_y_batch.to(device)
+
+    # Plot comparison between real and predicted for test set
+    REN_G.eval()
+
+    y_hat = REN_G(sample_u_batch)
+
+    # Convert to numpy for plotting
+    y_batch_np = sample_y_batch.detach().cpu().numpy()
+    y_hat_np = y_hat.detach().cpu().numpy()
+    residual = y_batch_np - y_hat_np
+
+    # Time array for plotting
+    time_plot = np.arange(0, sample_u_batch.shape[1] * ts, ts)
+
+    axes[i].hist(residual[0, :, 0], bins=30, edgecolor='k')
+    axes[i].set_title(f"Test Set - Sample {i+1}")
+    axes[i].set_xlabel("Residual")
+    axes[i].set_ylabel("Frequency")
+    axes[i].grid(True)
+
+plt.suptitle("Histogram of Residuals")
+plt.tight_layout()
+plt.show()
+
 #-------------------------plot open loop simulation of the real plant and the identified model G----------------------------------------------------
 u_OL = torch.randn((num_signals, horizon, input_dim)) * input_noise_std
-y_OL = sys(x0 = x0, u_ext = u_OL)
+y_OL = plant(x0 = x0, u_ext = u_OL, output_noise_std = output_noise_std)
 
 REN_G.eval()
 REN_G.reset()
@@ -231,22 +292,19 @@ y_OL_G = y_OL_G.detach().numpy()
 fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
 
 # Plot Plant Inputs
-for i in range(input_dim):
-    axes[0].plot(u_OL[:, :, i].T, alpha=0.6)
+axes[0].plot(u_OL[:, :, 0].T, alpha=0.6)
 axes[0].set_title("Plant Input Trajectories (Control Inputs)")
 axes[0].set_xlabel("Time Step")
 axes[0].set_ylabel("Control Input")
 
 # Plot Plant Outputs
-for i in range(output_dim):
-    axes[1].plot(y_OL[:, :, i].T, alpha=0.6)
+axes[1].plot(y_OL[:, :, 0].T, alpha=0.6)
 axes[1].set_title("Real plant Output Trajectories")
 axes[1].set_xlabel("Time Step")
 axes[1].set_ylabel("System Output")
 
 # Plot Plant Outputs
-for i in range(output_dim):
-    axes[2].plot(y_OL_G[:, :, i].T, alpha=0.6)
+axes[2].plot(y_OL_G[:, :, 0].T, alpha=0.6)
 axes[2].set_title("Identified model G Output Trajectories")
 axes[2].set_xlabel("Time Step")
 axes[2].set_ylabel("System Output")
@@ -281,12 +339,12 @@ for epoch in range(epochs):
     closed_loop_REN.train()
     loss_epoch = 0.0  # Accumulate training loss
 
-    for u_batch, y_batch in train_loader:
+    for _, u_batch, y_batch in train_loader:
         u_batch, y_batch = u_batch.to(device), y_batch.to(device)
 
         optimizer.zero_grad()
         #TODO: input x0 is not needed in the closed loop of REN and controller
-        _, y_hat_train_S = closed_loop_REN(x0, u_batch)
+        _, y_hat_train_S = closed_loop_REN(x0, u_batch, output_noise_std)
 
         if torch.isnan(y_hat_train_S).any() or torch.isinf(y_hat_train_S).any():
             y_hat_train_S = torch.nan_to_num(y_hat_train_S, nan=1e5, posinf=1e5, neginf=-1e5)
@@ -309,10 +367,10 @@ for epoch in range(epochs):
     loss_val_epoch = 0.0
 
     with torch.no_grad():
-        for u_batch, y_batch in val_loader:
+        for _, u_batch, y_batch in val_loader:
             u_batch, y_batch = u_batch.to(device), y_batch.to(device)
 
-            _, y_hat_val = closed_loop_REN(x0, u_batch)
+            _, y_hat_val = closed_loop_REN(x0, u_batch, output_noise_std)
 
             if torch.isnan(y_hat_val).any() or torch.isinf(y_hat_val).any():
                 y_hat_val = torch.nan_to_num(y_hat_val, nan=1e5, posinf=1e5, neginf=-1e5)
@@ -349,14 +407,15 @@ plt.show()
 # Model's Predictions vs Actual Output for the training set
 fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(8, 12), sharex=True, sharey=True)
 
+train_iterator = iter(train_loader)
 for i in range(3):  # Choose 3 batches from training data
-    sample_u_batch, sample_y_batch = next(iter(train_loader))  # Get a sample batch
+    _, sample_u_batch, sample_y_batch = next(train_iterator)  # Get a sample batch
     sample_u_batch, sample_y_batch = sample_u_batch.to(device), sample_y_batch.to(device)
 
     # Plot comparison between real and predicted for training set
     closed_loop_REN.eval()
 
-    _, y_hat = closed_loop_REN(x0, sample_u_batch)
+    _, y_hat = closed_loop_REN(x0, sample_u_batch, output_noise_std)
 
     # Convert to numpy for plotting
     y_batch_np = sample_y_batch.detach().cpu().numpy()
@@ -381,14 +440,15 @@ plt.show()
 # Model's Predictions vs Actual Output for the test set
 fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(8, 12), sharex=True, sharey=True)
 
+test_iterator = iter(test_loader)
 for i in range(3):  # Choose 3 batches from test data
-    sample_u_batch, sample_y_batch = next(iter(test_loader))  # Get a sample batch
+    _, sample_u_batch, sample_y_batch = next(test_iterator)  # Get a sample batch
     sample_u_batch, sample_y_batch = sample_u_batch.to(device), sample_y_batch.to(device)
 
     # Plot comparison between real and predicted for test set
     closed_loop_REN.eval()
 
-    _, y_hat = closed_loop_REN(x0, sample_u_batch)
+    _, y_hat = closed_loop_REN(x0, sample_u_batch, output_noise_std)
 
     # Convert to numpy for plotting
     y_batch_np = sample_y_batch.detach().cpu().numpy()
@@ -412,10 +472,10 @@ plt.show()
 
 #-------------------------plot open loop simulation of the real plant and the identified model S in closed loop with K----------------------------------------------------
 u_OL = torch.randn((num_signals, horizon, input_dim)) * input_noise_std
-y_OL = sys(x0 = x0, u_ext = u_OL)
+y_OL = plant(x0 = x0, u_ext = u_OL, output_noise_std = output_noise_std)
 
 closed_loop_REN.eval()
-_, y_OL_S = closed_loop_REN(x0, u_OL)
+_, y_OL_S = closed_loop_REN(x0, u_OL, output_noise_std)
 
 # Convert tensors to numpy for plotting
 u_OL = u_OL.detach().numpy()
@@ -426,22 +486,19 @@ y_OL_S = y_OL_S.detach().numpy()
 fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
 
 # Plot Plant Inputs
-for i in range(input_dim):
-    axes[0].plot(u_OL[:, :, i].T, alpha=0.6)
+axes[0].plot(u_OL[:, :, 0].T, alpha=0.6)
 axes[0].set_title("Plant Input Trajectories (Control Inputs)")
 axes[0].set_xlabel("Time Step")
 axes[0].set_ylabel("Control Input")
 
 # Plot Plant Outputs
-for i in range(output_dim):
-    axes[1].plot(y_OL[:, :, i].T, alpha=0.6)
+axes[1].plot(y_OL[:, :, 0].T, alpha=0.6)
 axes[1].set_title("Real plant Output Trajectories")
 axes[1].set_xlabel("Time Step")
 axes[1].set_ylabel("System Output")
 
 # Plot Plant Outputs
-for i in range(output_dim):
-    axes[2].plot(y_OL_S[:, :, i].T, alpha=0.6)
+axes[2].plot(y_OL_S[:, :, 0].T, alpha=0.6)
 axes[2].set_title("Identified model S Output Trajectories")
 axes[2].set_xlabel("Time Step")
 axes[2].set_ylabel("System Output")
@@ -451,3 +508,4 @@ plt.tight_layout()
 plt.show()
 
 #%%
+
