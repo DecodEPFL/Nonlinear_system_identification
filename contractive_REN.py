@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.optim as optim
 from collections import OrderedDict
 
 
@@ -27,27 +28,25 @@ class ContractiveREN(nn.Module):
     """
 
     def __init__(
-        self, dim_in: int, dim_out: int, dim_internal: int,
-        dim_nl: int, internal_state_init = None, y_init = None,
-        initialization_std: float = 0.5, pos_def_tol: float = 0.001, contraction_rate_lb: float = 1.0
+        self, input_dim: int, output_dim: int, state_dim: int,
+        dim_nl: int, initialization_std: float = 0.5, pos_def_tol: float = 0.001, contraction_rate_lb: float = 1.0
     ):
         """
         Args:
-            dim_in (int): Input (u) dimension.
-            dim_out (int): Output (y) dimension.
-            dim_internal (int): Internal state (x) dimension. This state evolves with contraction properties.
+            input_dim (int): Input (u) dimension.
+            output_dim (int): Output (y) dimension.
+            state_dim (int): Internal state (x) dimension. This state evolves with contraction properties.
             dim_nl (int): Dimension of the input ("v") and ouput ("w") of the nonlinear static block.
             initialization_std (float, optional): Weight initialization. Set to 0.1 by default.
-            internal_state_init (torch.Tensor or None, optional): Initial condition for the internal state. Defaults to 0 when set to None.
             epsilon (float, optional): Positive and negligible scalar to force positive definite matrices.
             contraction_rate_lb (float, optional): Lower bound on the contraction rate. Defaults to 1.
         """
         super().__init__()
 
         # set dimensions
-        self.dim_in = dim_in
-        self.dim_out = dim_out
-        self.dim_internal = dim_internal
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.state_dim = state_dim
         self.dim_nl = dim_nl
 
         # set functionalities
@@ -58,37 +57,40 @@ class ContractiveREN(nn.Module):
 
         # define matrices shapes
         # auxiliary matrices
-        self.X_shape = (2 * self.dim_internal + self.dim_nl, 2 * self.dim_internal + self.dim_nl)
-        self.Y_shape = (self.dim_internal, self.dim_internal)
+        self.X_shape = (2 * self.state_dim + self.dim_nl, 2 * self.state_dim + self.dim_nl)
+        self.Y_shape = (self.state_dim, self.state_dim)
         # nn state dynamics
-        self.B2_shape = (self.dim_internal, self.dim_in)
+        self.B2_shape = (self.state_dim, self.input_dim)
         # nn output
-        self.C2_shape = (self.dim_out, self.dim_internal)
-        self.D21_shape = (self.dim_out, self.dim_nl)
-        self.D22_shape = (self.dim_out, self.dim_in)
+        self.C2_shape = (self.output_dim, self.state_dim)
+        self.D21_shape = (self.output_dim, self.dim_nl)
+        self.D22_shape = (self.output_dim, self.input_dim)
         # v signal
-        self.D12_shape = (self.dim_nl, self.dim_in)
+        self.D12_shape = (self.dim_nl, self.input_dim)
 
         # define trainable params
         self.training_param_names = ['X', 'Y', 'B2', 'C2', 'D21', 'D22', 'D12']
         self._init_trainable_params(initialization_std)
 
         # mask
-        self.register_buffer('eye_mask_H', torch.eye(2 * self.dim_internal + self.dim_nl))
+        self.register_buffer('eye_mask_H', torch.eye(2 * self.state_dim + self.dim_nl))
         self.register_buffer('eye_mask_w', torch.eye(self.dim_nl))
 
-        # initialize internal state
-        if internal_state_init is None:
-            if y_init is None:
-                self.x = torch.zeros(1, 1, self.dim_internal)
-            else:
-                y_init = y_init.reshape(1, -1)
-                self.x = torch.linalg.lstsq(self.C2, y_init.to(self.C2.device).squeeze(1).T)[0].T
-        else:
-            assert isinstance(internal_state_init, torch.Tensor)
-            self.x = internal_state_init.reshape(1, 1, self.dim_internal)
-        self.register_buffer('x_init', self.x.detach().clone())
-        self.register_buffer('y_init', F.linear(self.x_init, self.C2))
+        # Initialize internal state to None by default
+        self.register_buffer('x', None)
+
+        # # initialize internal state
+        # if internal_state_init is None:
+        #     if y_init is None:
+        #         self.x = torch.zeros(1, 1, self.state_dim)
+        #     else:
+        #         y_init = y_init.reshape(1, -1)
+        #         self.x = torch.linalg.lstsq(self.C2, y_init.to(self.C2.device).squeeze(1).T)[0].T
+        # else:
+        #     assert isinstance(internal_state_init, torch.Tensor)
+        #     self.x = internal_state_init.reshape(1, 1, self.state_dim)
+        # self.register_buffer('x_init', self.x.detach().clone())
+        # self.register_buffer('y_init', F.linear(self.x_init, self.C2))
 
     def _update_model_param(self):
         """
@@ -96,10 +98,10 @@ class ContractiveREN(nn.Module):
         """
         # dependent params
         H = torch.matmul(self.X.T, self.X) + self.epsilon * self.eye_mask_H
-        h1, h2, h3 = torch.split(H, [self.dim_internal, self.dim_nl, self.dim_internal], dim=0)
-        H11, H12, H13 = torch.split(h1, [self.dim_internal, self.dim_nl, self.dim_internal], dim=1)
-        H21, H22, _ = torch.split(h2, [self.dim_internal, self.dim_nl, self.dim_internal], dim=1)
-        H31, H32, H33 = torch.split(h3, [self.dim_internal, self.dim_nl, self.dim_internal], dim=1)
+        h1, h2, h3 = torch.split(H, [self.state_dim, self.dim_nl, self.state_dim], dim=0)
+        H11, H12, H13 = torch.split(h1, [self.state_dim, self.dim_nl, self.state_dim], dim=1)
+        H21, H22, _ = torch.split(h2, [self.state_dim, self.dim_nl, self.state_dim], dim=1)
+        H31, H32, H33 = torch.split(h3, [self.state_dim, self.dim_nl, self.state_dim], dim=1)
         P = H33
 
         # nn state dynamics
@@ -120,10 +122,10 @@ class ContractiveREN(nn.Module):
         Forward pass of REN.
 
         Args:
-            u_in (torch.Tensor): Input with the size of (batch_size, 1, self.dim_in).
+            u_in (torch.Tensor): Input with the size of (batch_size, 1, self.input_dim).
 
         Return:
-            y_out (torch.Tensor): Output with (batch_size, 1, self.dim_out).
+            y_out (torch.Tensor): Output with (batch_size, 1, self.output_dim).
         """
         # update non-trainable model params
         self._update_model_param()
@@ -145,27 +147,77 @@ class ContractiveREN(nn.Module):
         y_out = F.linear(self.x, self.C2) + F.linear(w, self.D21) + F.linear(u_in, self.D22)
         return y_out
 
-    def reset(self):
-        self.x = self.x_init  # reset the REN state to the initial value
+    #compute initial internal state to have the output match the output of the system
+    def compute_x0_to_match_sys_output(self, x0_sys):
+        y0_sys = x0_sys
+        #y_init = y_init.reshape(1, -1)
+        x0 = torch.linalg.lstsq(self.C2, y0_sys.to(self.C2.device).squeeze(1).T)[0].T.unsqueeze(1)
+
+        return x0
+
+    def reset(self, x0_sys=None, batch_size=1):
+        """
+        Reset the internal state.
+
+        Args:
+            x0_sys (torch.Tensor, optional): Initial state of the real plant, shape = (batch_size, 1, state_dim).
+            batch_size (int): Batch size for initialization.
+        """
+
+        sys_state_dim = x0_sys.shape[-1]
+
+        if x0_sys is None:
+            x0_sys = torch.zeros(1, 1, sys_state_dim)  # Default to zeros
+        else:
+            if x0_sys.shape == (batch_size, 1, sys_state_dim):
+                x0_sys = x0_sys
+            elif x0_sys.shape == (1, 1, sys_state_dim):
+                x0_sys = x0_sys.expand(batch_size, 1, sys_state_dim)
+            elif x0_sys.shape == torch.Size([sys_state_dim]):
+                x0_sys = x0_sys.view(1, 1, -1).expand(batch_size, 1, sys_state_dim)
+            #x0_sys = x0_sys.view(-1, 1, sys_state_dim)  # Ensure shape (batch_size, 1, state_dim)
+            #x0_sys = x0_sys.expand(batch_size, -1, -1)  # Expand if needed
+            # x0_sys = x0_sys.view(-1, 1, sys_state_dim)  # Ensure shape (batch_size, 1, sys_state_dim)
+            # if x0_sys.shape[0] == 1:  # If it's a single sample, expand it for batch processing
+            #     x0_sys = x0_sys.expand(batch_size, 1, sys_state_dim)
+        x0 = self.compute_x0_to_match_sys_output(x0_sys)
+        self.x = x0
+
+    def y0_from_x0(self, x0):
+        y0 = F.linear(x0, self.C2)
+        return y0
 
 
-    def run(self, u_in):
+    def run(self, x0_sys, u_in):
         """
         Runs the forward pass of REN for a whole input sequence of length horizon.
 
         Args:
-            u_in (torch.Tensor): Input with the size of (batch_size, horizon, self.dim_in).
+            x0_sys: initial condition of the real plant
+            u_in (torch.Tensor): Input with the size of (batch_size, horizon, self.input_dim).
 
         Return:
-            y_out (torch.Tensor): Output with (batch_size, horizon, self.dim_out).
+            y_out (torch.Tensor): Output with (batch_size, horizon, self.output_dim).
         """
+        horizon = u_in.shape[1]
+        batch_size = u_in.shape[0]
 
-        self.reset()
-        y_log = self.y_init.detach().clone().repeat(u_in.shape[0], 1, 1)
-        for t in range(u_in.shape[1] - 1):
-            y_log = torch.cat((y_log, self.forward(u_in[:, t:t + 1, :])), 1)
-        # note that the last input is not used
-        return y_log
+        # Storage for trajectories
+        y_traj = []
+
+        self.reset(x0_sys = x0_sys, batch_size = batch_size)
+
+        y0 = self.y0_from_x0(self.x)
+        y = y0
+
+        for t in range(horizon):
+            y_traj.append(y)  # Store output
+            y = self.forward(u_in[:, t:t + 1, :])
+            # note that the last input is not used
+
+        y_traj = torch.cat(y_traj, dim=1)  # Shape: (batch_size, horizon, output_dim)
+
+        return y_traj
 
     # init trainable params
     def _init_trainable_params(self, initialization_std):
@@ -188,5 +240,5 @@ class ContractiveREN(nn.Module):
         )
         return param_dict
 
-    def __call__(self, u_in):
-        return self.run(u_in)
+    def __call__(self, x0_sys, u_in):
+        return self.run(x0_sys, u_in)
